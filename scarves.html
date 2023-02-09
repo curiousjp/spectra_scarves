@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html><head>
+		<meta http-equiv="content-type" content="text/html; charset=UTF-8">
+		<title>emission spectra scarf pattern generator</title>
+		<link rel="stylesheet" href="periodic.css">
+		<script src="elements.js"></script>
+		<script src="colourmodel_Bruton.js"></script>
+		<script src="colourmodel_Rainbow.js"></script>
+		<script src="colourmodel_XYZ.js"></script>
+
+		<script>
+function buildElementClickHandlers() {
+	var elementCells = document.querySelectorAll( "table.elements td" );
+	var clickHandler = function() {
+		var symbol = this.innerHTML;
+		if( symbol != "<br>" ) {
+			var selectedElement = document.getElementById( "selectedElement" );
+			selectedElement.innerHTML = symbol;
+			redrawImages();
+		}
+	}
+	for( var i = 0; i < elementCells.length; i++ )
+		elementCells[i].addEventListener( "click", clickHandler, false );
+}
+
+function colourArrayToRGB( ca, gain ) {
+	// blowout protection
+	var maxGain = 1.0 / ( Math.max( Math.max( ca[0], ca[1] ), ca[2] ) );
+	gain = Math.min( gain, maxGain );
+	
+	var r = Math.min( 1.0, ca[0] * gain );
+	var g = Math.min( 1.0, ca[1] * gain );
+	var b = Math.min( 1.0, ca[2] * gain );
+	return "rgb(" + ( r * 100.0 ) + "%," + ( g * 100.0 ) + "%," + (b * 100.0) + "%)";
+}
+
+function redrawCanvas(canvasElement, lineArrayRaw, bloomEnabled, directIntensity, gain ) {
+	// filter out any bad lines, i.e. any with xpositions less than zero or greater than 1
+	var lineArray = lineArrayRaw.filter( x => x[0] >= 0 && x[0] < 1 );
+
+	// reshape the 0->1 range over the width of the canvas, combining intensities where
+	// they land on the same horizontal position
+	var combinedLineIntensities = {};
+	var combinedLineColours = {};
+	var maximumIntensity = 0;
+	
+	for( var i = 0; i < lineArray.length; i++ ) {
+		var xPosition = Math.floor( lineArray[i][0] * canvasElement.width );
+		if( combinedLineIntensities.hasOwnProperty( xPosition ) )
+			combinedLineIntensities[ xPosition ] += lineArray[i][1];
+		else {
+			combinedLineIntensities[ xPosition ] = lineArray[i][1];
+			combinedLineColours[ xPosition ] = lineArray[i][2];
+		}
+		maximumIntensity = Math.max( maximumIntensity, combinedLineIntensities[ xPosition ] );
+	}
+
+	var context = canvasElement.getContext( "2d" );
+	context.fillStyle = "black";
+	context.fillRect( 0, 0, canvasElement.width, canvasElement.height );
+	
+	for( var key in combinedLineIntensities ) {
+		if( combinedLineIntensities.hasOwnProperty( key ) == false )
+			continue;
+		
+		var xPosition = parseInt( key );
+		var relativeIntensity = combinedLineIntensities[key] / maximumIntensity;
+		var localGain = gain;	
+		if( directIntensity ) 
+			localGain *= relativeIntensity;
+		context.fillStyle = colourArrayToRGB( combinedLineColours[key], localGain );
+		context.fillRect( xPosition, 0, 1, canvasElement.height );
+
+		if( bloomEnabled && relativeIntensity > 0.5 && ( xPosition + 1 < canvasElement.width ) )
+			context.fillRect( xPosition + 1, 0, 1, canvasElement.height );
+		
+		if( bloomEnabled && relativeIntensity > 0.85 && ( xPosition + 2 < canvasElement.width ) )
+			context.fillRect( xPosition + 2, 0, 1, canvasElement.height );
+	}
+}
+
+function redrawPattern( patternRows, lineArrayRaw, bloomEnabled, directIntensity, gain ) {
+	var tempCanvas = document.createElement( "canvas" );
+	tempCanvas.width = patternRows;
+	tempCanvas.height = 1;
+	redrawCanvas( tempCanvas, lineArrayRaw, bloomEnabled, directIntensity, gain );
+	
+	var lineColours = Array( patternRows );
+	var tempContext = tempCanvas.getContext( "2d" );
+	var pixelData = tempContext.getImageData( 0, 0, patternRows, 1 ).data;
+	for( var i = 0; i < patternRows; i++ ) {
+		var index = i * 4;
+		var r = ( "0" + pixelData[index+0].toString(16) ).slice(-2);
+		var g = ( "0" + pixelData[index+1].toString(16) ).slice(-2);
+		var b = ( "0" + pixelData[index+2].toString(16) ).slice(-2);
+		lineColours[i] = "#" + r + g + b;
+	}
+	
+	var summaryList = Array();
+	var currentColour = lineColours[0];
+	var currentCount = 1;
+	for( var i = 1; i < lineColours.length; i++ ) {
+		if( lineColours[i] == currentColour )
+			currentCount += 1;
+		else {
+			summaryList.push( [ currentColour, currentCount ] );
+			currentColour = lineColours[i];
+			currentCount = 1;
+		}
+	}
+	summaryList.push( [ currentColour, currentCount ] );
+
+	var htmlPattern = "<table>";
+	for( var i = 0; i < summaryList.length; i++ ) 
+		htmlPattern += "<tr><td style=\"text-align: right\">" + summaryList[i][1] + "</td><td>row(s) of " + summaryList[i][0] + "</td><td>(<span style=\"color: " + summaryList[i][0] + "\">&#9608;&#9608;&#9608;&#9608;</span>)</td></tr>\n";
+	htmlPattern += "</table>";
+	document.getElementById( "finalPattern" ).innerHTML = htmlPattern;
+}
+
+function colouriseMonotone( nm ) {
+	return [1,1,1];
+}
+
+function redrawImages() {
+	// determine which set of spectra we are looking at
+	var lines;
+
+	// try to read the JSON
+	var jsonString = document.getElementById( "lineOverride" ).value;
+	if( jsonString != "" ) {
+		try {
+			lines = JSON.parse( jsonString );
+		} catch( e ) {
+			alert( "difficulties parsing JSON (" + e + ") falling back to periodic table selection" );
+			jsonString = "";
+		}
+	}
+	if( jsonString == "" ) lines = elements[ document.getElementById( "selectedElement" ).innerHTML ];
+
+	// defaults
+	var wavelengthLower = 390;
+	var wavelengthUpper = 700;
+	var bloomEnabled = true;
+	var directIntensity = false;
+	var colourModel = colouriseRainbow;
+	var colourGain = 1.0;
+	
+	switch( document.getElementById( "colourModel" ).value ) {
+		case "mono":
+			colourModel = colouriseMonotone;
+			break;
+		case "bruton":
+			colourModel = colouriseBruton;
+			break;
+		case "xyz":
+			colourModel = colouriseXYZ;
+			break;
+		default:
+			colourModel = colouriseRainbow;
+			break;
+	}
+
+	try {
+		wavelengthLower = parseInt( document.getElementById( "wavelengthLower" ).value );
+	} catch( e ) {
+		alert( "lower bound (nanometers) should be an integer, falling back to default of " + wavelengthLower );
+	}
+
+	try {
+		wavelengthUpper = parseInt( document.getElementById( "wavelengthUpper" ).value );
+	} catch( e ) {
+		alert( "upper bound (nanometers) should be an integer, falling back to default of " + wavelengthUpper );
+	}
+	bloomEnabled = document.getElementById( "bloomEnabled" ).checked;
+	directIntensity = document.getElementById( "intensityEnabled" ).checked;
+	
+	try {
+		colourGain = parseFloat( document.getElementById( "colourGain" ).value ) / 100.0;
+	} catch( e ) {
+	  	alert( "colour gain (percentage) should be a number, falling back to a default of 100%" );
+	}
+
+	// redraw the preview
+	redrawCanvas( document.getElementById( "previewCanvas" ),
+		lines.map( x => [ ( x[0] - wavelengthLower ) / ( wavelengthUpper - wavelengthLower ), x[1], colouriseMonotone( x[0] ) ] ),
+		bloomEnabled, directIntensity, colourGain );
+	redrawCanvas( document.getElementById( "finalCanvas" ),
+		lines.map( x => [ ( x[0] - wavelengthLower ) / ( wavelengthUpper - wavelengthLower ), x[1], colourModel( x[0] ) ] ),
+		bloomEnabled, directIntensity, colourGain );
+
+	// calculate the number of rows
+	var scarfLength = 175.0;
+	var cmPerRow = 0.6;
+	try { scarfLength = parseFloat( document.getElementById( "scarfLength" ).value ); } catch( e ) { alert( "scarf length needs to be a number, falling back to default of " + scarfLength ); }
+	try { cmPerRow = parseFloat( document.getElementById( "cmPerRow" ).value ); } catch( e ) { alert( "centimeters per row needs to be a number, falling back to default of " + cmPerRow ); }
+	var totalRows = Math.ceil( scarfLength / cmPerRow );
+	document.getElementById( "numberOfRows" ).innerHTML = totalRows;
+	redrawPattern( totalRows, lines.map( x => [ ( x[0] - wavelengthLower ) / ( wavelengthUpper - wavelengthLower ), x[1], colourModel( x[0] ) ] ),	
+		bloomEnabled, directIntensity, colourGain );
+}
+
+function main() {
+	buildElementClickHandlers();
+	document.getElementById( "wavelengthLower" ).addEventListener("change", redrawImages, false );
+	document.getElementById( "wavelengthUpper" ).addEventListener("change", redrawImages, false );
+	document.getElementById( "bloomEnabled" ).addEventListener("change", redrawImages, false );
+	document.getElementById( "intensityEnabled" ).addEventListener("change", redrawImages, false );
+	document.getElementById( "lineOverride" ).addEventListener("change", redrawImages, false );
+	document.getElementById( "colourModel" ).addEventListener("change", redrawImages, false );
+	document.getElementById( "scarfLength" ).addEventListener("change", redrawImages, false );
+	document.getElementById( "cmPerRow" ).addEventListener("change", redrawImages, false );
+	document.getElementById( "colourGain" ).addEventListener("change", redrawImages, false );
+	redrawImages();
+}
+
+		</script>
+	</head>
+	<body onload="main()"> 
+
+		<h1>emission spectra scarf pattern generator</h1>
+		<p>This is a very barebones javascript rewrite of the old cgi python version.</p>
+
+		<h2>select element or provide a manual spectrum</h2>
+		<p>The currently selected element is: <b><span id="selectedElement">H</span></b>. Click on the table below to select another element.</p>
+
+		<!-- ugh. the event handlers for this table use <br> to indicate an 'empty' periodic table cell -->
+		<table class="elements" id="elementTable">
+			<tbody>
+				<tr><td>H</td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td>He</td></tr>
+				<tr><td>Li</td><td>Be</td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td>B</td><td>C</td><td>N</td><td>O</td><td>F</td><td>Ne</td></tr> 
+				<tr><td>Na</td><td>Mg</td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td>Al</td><td>Si</td><td>P</td><td>S</td><td>Cl</td><td>Ar</td></tr>
+				<tr><td>K</td><td>Ca</td><td>Sc</td><td>Ti</td><td>V</td><td>Cr</td><td>Mn</td><td>Fe</td><td>Co</td><td>Ni</td><td>Cu</td><td>Zn</td><td>Ga</td><td>Ge</td><td>As</td><td>Se</td><td>Br</td><td>Kr</td></tr>
+				<tr><td>Rb</td><td>Sr</td><td>Y</td><td>Zr</td><td>Nb</td><td>Mo</td><td>Tc</td><td>Ru</td><td>Rh</td><td>Pd</td><td>Ag</td><td>Cd</td><td>In</td><td>Sn</td><td>Sb</td><td>Te</td><td>I</td><td>Xe</td></tr> 
+				<tr><td>Cs</td><td>Ba</td><td><br></td><td>Hf</td><td>Ta</td><td>W</td><td>Re</td><td>Os</td><td>Ir</td><td>Pt</td><td>Au</td><td>Hg</td><td>Tl</td><td>Pb</td><td>Bi</td><td>Po</td><td>At</td><td>Rn</td></tr>
+				<tr><td>Fr</td><td>Ra</td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td></tr>
+				<tr><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td><td><br></td></tr>
+				<tr><td><br></td><td><br></td><td><br></td><td>La</td><td>Ce</td><td>Pr</td><td>Nd</td><td>Pm</td><td>Sm</td><td>Eu</td><td>Gd</td><td>Tb</td><td>Dy</td><td>Ho</td><td>Er</td><td>Tm</td><td>Yb</td><td>Lu</td></tr>
+				<tr><td><br></td><td><br></td><td><br></td><td>Ac</td><td>Th</td><td>Pa</td><td>U</td><td>Np</td><td>Pu</td><td>Am</td><td>Cm</td><td>Bk</td><td>Cf</td><td>Es</td><td><br></td><td><br></td><td><br></td><td><br></td></tr> 
+			</tbody> 
+		</table> 
+
+		<p><b>important limitations and notes regarding spectral data:</b></p>
+		<ul>
+			<li>elements line records include their slightly ionised forms;</li>
+			<li>line data is derived from the "findings list" in NIST Standard 
+				Reference Database 108: J.E. Sansonetti, W.C. Martin, and S.L. Young 
+				(2005) <i>Handbook of Basic Atomic Spectroscopic Data</i> (ver. 1.1.2) [Online]. Available: <a href="https://dx.doi.org/10.18434/T4FW23">https://dx.doi.org/10.18434/T4FW23</a>
+				[2018, October 2]. National Institute of Standards and Technology, 
+				Gaithersburg, MD. This data is less complete than NIST Standard 
+				Reference Database 78 (<i>Atomic Spectra Database</i>) but was easier to process into an intermediate form I could use.</li>
+		</ul>
+
+		<p>If you would like to make something that isn't available above 
+		(Moscovium? a quasar?), you can override the selected element above 
+		using the text entry box below. The format for manual overrides is a 
+		JSON formatted Array of Arrays, with each inner array being a pair of 
+		wavelength / relative intensity pairs. Wavelengths should be represented
+		in nanometers. For example, here is the manual spectrum for neutral 
+		hydrogen:</p>
+		<blockquote>
+			[ [92.6226,15], [93.0748,20], [93.7803,30], [94.9743,50], 
+			[97.2537,100], [102.5722,300], [121.5668,1000], [121.5674,500], 
+			[383.5384,5], [388.9049,6], [397.0072,8], [410.1740,15], [434.0462,30], 
+			[486.1279,30], [486.1287,10], [486.1362,60], [656.2711,90], 
+			[656.2725,30], [656.2852,180], [954.5970,5], [1004.9400,7], 
+			[1093.8100,12], [1281.8070,20], [1875.1010,40], [2165.5300,5], 
+			[2625.1500,8], [4051.1600,15], [4652.5100,4], [7457.8000,6], 
+			[12368.5000,3] ]<br>
+			<textarea id="lineOverride"></textarea>
+		</blockquote>
+
+		<h2>select scarf wavelength limits, and view a monochrome preview</h2> 
+		<p>"Visible light" refers to wavelengths from roughly 390 to 700 
+		nanometers, and these numbers are used as defaults. You might want to 
+		make this span smaller to focus on a particular part of the spectrum, or
+		wider to capture lines outside of the visible range - some elements 
+		have few or no lines in the visible region. As the colour models are based on 
+		approximations of human perception however, anything outside the 390-700
+		nm band is liable to be rendered as black unless you use the 
+		"monochrome" colour model.</p>
+		<table>
+			<tbody>
+				<tr><td>&nbsp;&bull;&nbsp;lower bound (nanometers):</td><td><input id="wavelengthLower" value="390" type="text"></td></tr>
+				<tr><td>&nbsp;&bull;&nbsp;upper bound (nanometers):</td><td><input id="wavelengthUpper" value="700" type="text"></td></tr>
+			</tbody>
+		</table>
+		
+		<p>To help you set your wavelength span, here is a preview of your current spectra settings, presented in the monochrome colour model:</p>
+		<blockquote>
+			<canvas id="previewCanvas" width="640" height="15"></canvas>
+		</blockquote>
+
+		<h2>select colour model and bloom settings</h2> 
+		<p>Spectral line data includes wavelengths and relative intensities. 
+		There are many formulas available to convert wavelengths to colours - 
+		all of which are at best estimations - of which four are available 
+		here. The first is the 'monochrome', which renders all lines as white; 
+		the second is "rainbow", a simple seven colour posterisation (this is 
+		recommended if you actually have to go out and buy your own wool); 'bruton' 
+		is an adaption of Dan Bruton's <a href="http://www.midnightkite.com/color.html">linear approximation method</a>; 
+		and the last is Nino Cutic's very good XYZ model.</p>
+
+		<p>Although I have tried various different methods for representing
+		line intensity, I still haven't come up with something that looks really
+		good. This area offers three possible compromise options you can turn on
+		or off, which you can either use on their own or together: 'direct intensity',
+		'bloom' and 'colour gain'.</p>
+		<p>When 'direct intensity' is turned on, colours are faded according to
+		their relative intensity compared to the brightest line in the selected
+		spectra. For example, in the visible range, Hydrogen has a line at 656nm
+		with a relative intensity of 180. The line at 486nm has a relative intensity
+		of 30. Once the RGB value for 486nm is determined, those values will be
+		reduced by 70%.</p>
+		<p>When 'bloom' is turned on, all the lines in a spectra are inspected 
+		to find which is brightest, and then all the lines are categorised 
+		according to their relative intensity (on a percentage basis) compared 
+		with this bright line. Lines at less than 50% brightness compared to the
+		brightest line are assigned a single row of stitches, lines at 50% to 
+		84% are assigned two rows, and lines at 85% or more are given three 
+		rows.</p>
+		<p>When 'colour gain' is set to something other than 100%, the red, green
+		and blue components of the colours are increased (or decreased, as necessary)
+		by that percentage. There is some relativity control imposed when you are
+		turning the gain out to stop things blowing out into white - attempting to
+		apply a 200% colour gain to an aquamarine colour of 0.5, 1.0, 0.8 will result in
+		no change as the green component is already pegged at 1.0.</p> 
+		<table>
+			<tbody>
+				<tr><td>&nbsp;&bull;&nbsp;colour model:</td><td>
+						<select id="colourModel">
+								<option value="mono">monochrome</option>
+								<option value="rainbow" selected="selected">rainbow</option>
+								<option value="bruton">bruton</option>
+								<option value="xyz">xyz</option>
+						</select>
+					</td>
+				</tr>
+				<tr><td>&nbsp;&bull;&nbsp;enable direct intensity:</td><td><input id="intensityEnabled" type="checkbox"></td></tr>
+				<tr><td>&nbsp;&bull;&nbsp;enable bloom:</td><td><input id="bloomEnabled" checked="checked" type="checkbox"></td></tr>
+				<tr><td>&nbsp;&bull;&nbsp;colour gain (percentage):</td><td><input id="colourGain" value="100" type="text"></td></tr>
+			</tbody>
+		</table>
+
+		<p>Here is a colourised preview of the pattern you will be working with:</p>
+		<blockquote>
+			<canvas id="finalCanvas" width="640" height="15"></canvas>
+		</blockquote>
+
+		<h2>select scarf length</h2>
+		<p>Please enter the overall length for your scarf and the length of each row of stitches.</p>
+		<table>
+			<tbody>
+				<tr><td>&nbsp;&bull;&nbsp;scarf length (centimeters):</td><td><input id="scarfLength" value="175" type="text"></td></tr>
+				<tr><td>&nbsp;&bull;&nbsp;row length (centimeters):</td><td><input id="cmPerRow" value="0.6" type="text"></td></tr>
+			</tbody>
+		</table>
+		
+		<p>Based on the above, your scarf will have <span id="numberOfRows">292</span> rows.</p>
+
+		<h2>final pattern</h2>
+		<div id="finalPattern"></div>
+	</body>
+</html>

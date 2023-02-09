@@ -1,0 +1,8 @@
+table.elements td {
+  width: 2em;
+  text-align: center;
+}
+
+input {
+  text-align: right;
+}
